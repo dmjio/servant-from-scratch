@@ -1,7 +1,7 @@
 servant-from-scratch
 =========================
 
-Implement a majority subset of `servant-client` from scratch using this walkthrough-tutorial.
+Implement a majority subset of both `servant-client` and `servant-server` from scratch using this walkthrough-tutorial.
 
 ### Build
 

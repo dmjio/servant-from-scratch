@@ -24,26 +24,36 @@
 > module Main where
 
 > import           Control.Monad
+> import           Control.Applicative
 > import           Data.Aeson
 > import           Data.Aeson.Encode.Pretty
 > import qualified Data.ByteString.Char8      as B8
 > import qualified Data.ByteString.Lazy.Char8 as BL8
+> import qualified Data.Text                  as T
+> import           Data.Text                  (Text)
+> import qualified Data.Text.Encoding         as T
 > import           Data.List
 > import           Data.Proxy
 > import           GHC.Generics
 > import           GHC.TypeLits
-> import           Network.HTTP.Client        hiding (Proxy, path)
+> import           Network.HTTP.Client        hiding (Proxy, path, Response)
 > import           Network.HTTP.Client.TLS
 > import           Network.HTTP.Types.Status
+> import           Network.Wai hiding (queryString, requestHeaders, responseStatus, requestBody)
+> import           Web.HttpApiData
+> import           Network.Wai.Handler.Warp (run)
+
 
 Nice to see where we're going before we get there.
 Our goal is to build the following http(s)-client using 'servant' from scratch.
+and servant-server (with Wai)
 
 > main :: IO ()
 > main = do
->  -- run $ getEcho (Just "bar") (Just "quux")
->  run (postEcho alice)
->  -- run (postEcho bob)
+>  -- submit $ getEcho (Just "bar") (Just "quux")
+>  submit (postEcho alice)
+>  -- submit (postEcho bob)
+>  runServer
 
 > --  ### What is servant?
 
@@ -68,7 +78,7 @@ Servant can be described as an extensible embedded domain specific language. Thi
 -- "GET /api/cats" :<|> "POST /api/cats"
 
 > data left :<|> right = left :<|> right
-> infixr 4 :<|>
+> infixr 3 :<|>
 
 > -- ### Sub
 
@@ -421,8 +431,8 @@ Servant can be described as an extensible embedded domain specific language. Thi
 >
 > type FullAPI = GetAPI :<|> PostAPI
 >
-> run :: IO (Either Error Value) -> IO ()
-> run f = f >>= \case
+> submit :: IO (Either Error Value) -> IO ()
+> submit f = f >>= \case
 >   Left e ->
 >     print e
 >   Right r ->
@@ -444,3 +454,77 @@ Servant can be described as an extensible embedded domain specific language. Thi
 -- In this talk we discussed how an embedded domain specific language is a special purpose
 -- limited language with terms that are used to describe a particular domain, along with a way to interpret this language into objects that suit the domain. Servant is one such domain specific language for web programming. We discussed how servant is similar in spirit to GHC.Generics, where GHC.Generics can be thought of as a domain specific language for reifying objects from Haskell records. We showed how we can use the same type-level induction and reification techniques to extract information from a Haskell record's metadata at compile time. We discussed various type-level extensions like PolyKinds, DataKinds, TypeOperators (all of which servant would not be possible without). We overviewied type level symbols and naturals that are enabled via the DataKinds extension. We showed the inner workings of a real servant interpretation for a subset of the servant grammar that actually works on a real world API. After this talk you should be more equipped to deal with type level programming in GHC and be an informed user of the Haskell servant library.
 
+-- Bonus section:
+-- **Servant-server from Scratch**
+
+> type family Server a
+> type instance Server (l :<|> r) = Server l :<|> Server r
+> type instance Server (Get _ a) = IO a
+> type instance Server ((s :: Symbol) :> r) = Server r
+> type instance Server (Capture s a :> r) = a -> Server r
+>
+> class HasServer a where
+>   route
+>     :: Proxy a
+>     -> Server a
+>     -> [T.Text]
+>     -> Network.Wai.Request
+>     -> (Response -> IO ResponseReceived)
+>     -> Maybe (IO ResponseReceived)
+>
+> type SomeAPI =
+>   "api" :> Capture "hey" Int :> Get '[JSON] String
+>     :<|>
+>   "api" :> "ok" :> Capture "hey" String :> Get '[JSON] Int
+>
+> runServer :: IO ()
+> runServer = do
+>   putStrLn "Running on 3000..."
+>   run 3000 $ serve (Proxy @ SomeAPI) handlers
+>     where
+>       handlers = handler :<|> handler2
+>       handler x = print x >> pure "hey"
+>       handler2 x = print x >> pure 44
+>
+> serve
+>   :: HasServer a
+>   => Proxy a
+>   -> Server a
+>   -> Application
+> serve proxy handlers = \req resp -> do
+>   case route proxy handlers (paths req) req resp of
+>     Nothing -> resp $ responseLBS status404 mempty "400"
+>     Just x -> x
+>   where
+>     paths req
+>       = filter (not . T.null)
+>       $ T.splitOn "/"
+>       $ T.decodeUtf8 (rawPathInfo req)
+>
+> instance (HasServer l, HasServer r) => HasServer (l :<|> r) where
+>   route Proxy (l :<|> r) path req resp = do
+>     route (Proxy @ l) l path req resp <|>
+>       route (Proxy @ r) r path req resp
+>
+> instance (FromHttpApiData t, HasServer r) => HasServer (Capture name t :> r) where
+>   route Proxy appath (l:ls) req resp =
+>     case parseUrlPiece l :: Either Text t of
+>       Left _ ->
+>         Nothing
+>       Right r ->
+>         route (Proxy @ r) (appath r) ls req resp
+>   route _ _ _ _ _ = Nothing
+>
+> instance (KnownSymbol s, HasServer r) => HasServer (s :> r) where
+>   route Proxy apppath (l:ls) req resp =
+>     if T.pack (symbolVal (Proxy @ s)) == l
+>       then route (Proxy @ r) apppath ls req resp
+>       else Nothing
+>   route _ _ _ _ _ = Nothing
+>
+> instance ToJSON a => HasServer (Get xs a) where
+>     route Proxy s [] _ resp = do
+>       Just $ s >>= \a ->
+>         resp $ responseLBS status200 [] (encode a)
+>     route _ _ _ _ _      = Nothing
+>

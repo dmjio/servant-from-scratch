@@ -1,6 +1,6 @@
 { pkgs ? import <nixpkgs> {} }:
 let
-  ghc = pkgs.haskellPackages.ghcWithPackages (p: with p; [ aeson aeson-pretty http-client-tls http-client ]);
+  ghc = pkgs.haskellPackages.ghcWithPackages (p: with p; [ aeson aeson-pretty http-client-tls http-client warp wai http-api-data]);
   build = pkgs.stdenv.mkDerivation {
    name = "servant-from-scratch";
    src = ./.;
